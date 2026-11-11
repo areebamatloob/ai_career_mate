@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "627621767784",
+    "project_id": "ai-career-mate",
+    "storage_bucket": "ai-career-mate.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:627621767784:android:3b5a3c79d468ee0855a9dd",
+        "android_client_info": {
+          "package_name": "com.example.ai_career_mate"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDhyS2jqMyJbxLAtU2pSGsFzK7pxKRL5Tw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
