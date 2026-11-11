@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
 import 'quiz_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'welcome_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   /// true when opened later from Home to edit the profile.
@@ -48,6 +50,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
   }
+
+  Future<void> _signOut() async {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+          (route) => false,
+    );
+  }
+
 
   Widget _label(String text) {
     return Padding(
@@ -147,6 +159,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 text: widget.isEdit ? 'Save profile' : 'Save and start skills quiz',
                 onPressed: _save,
               ),
+              if (widget.isEdit)
+                Center(
+                  child: TextButton(
+                    onPressed: _signOut,
+                    child: const Text('Sign out',
+                        style: TextStyle(color: Colors.red)),
+                  ),
+                ),
               const SizedBox(height: 20),
             ],
           ),
