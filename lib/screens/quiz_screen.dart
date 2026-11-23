@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../sample_data.dart';
+import '../services/profile_service.dart';
 import '../theme.dart';
 import 'main_shell.dart';
+import 'welcome_screen.dart';
 
 /// Timed quiz. You cannot go back to an earlier question.
 class QuizScreen extends StatefulWidget {
@@ -22,6 +25,11 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _finished = false;
   final List<bool> _results = [];
 
+  final _profileService = ProfileService();
+  bool _isSaving = false;
+  bool _saved = false;
+  String? _errorText;
+
   @override
   void initState() {
     super.initState();
@@ -34,9 +42,9 @@ class _QuizScreenState extends State<QuizScreen> {
     super.dispose();
   }
 
-  void _startTimer() {
+  void _startTimer({bool reset = true}) {
     _timer?.cancel();
-    _secondsLeft = secondsPerQuestion;
+    if (reset) _secondsLeft = secondsPerQuestion;
     _timer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (_secondsLeft <= 1) {
         _next(); // time is over, an unanswered question counts as wrong
@@ -53,12 +61,84 @@ class _QuizScreenState extends State<QuizScreen> {
     if (_index == sampleQuiz.length - 1) {
       _timer?.cancel();
       setState(() => _finished = true);
+      _saveResult();
     } else {
       setState(() {
         _index++;
         _selected = null;
       });
       _startTimer();
+    }
+  }
+
+  // Har skill ke sahi aur kul jawab ginta hai.
+  Map<String, List<int>> _bySkill() {
+    final Map<String, List<int>> bySkill = {};
+    for (int i = 0; i < _results.length; i++) {
+      final skill = sampleQuiz[i].skill;
+      bySkill.putIfAbsent(skill, () => [0, 0]);
+      bySkill[skill]![1]++;
+      if (_results[i]) bySkill[skill]![0]++;
+    }
+    return bySkill;
+  }
+
+  Future<void> _saveResult() async {
+    setState(() {
+      _isSaving = true;
+      _errorText = null;
+    });
+
+    final Map<String, Map<String, int>> data = {};
+    _bySkill().forEach((skill, v) {
+      data[skill] = {'correct': v[0], 'total': v[1]};
+    });
+
+    final error = await _profileService.saveQuizResult(
+      score: _results.where((r) => r).length,
+      total: _results.length,
+      bySkill: data,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _isSaving = false;
+      _saved = error == null;
+      _errorText = error;
+    });
+  }
+
+  Future<void> _confirmSignOut() async {
+    _timer?.cancel(); // dialog khula ho to timer ruk jaye
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Sign out?'),
+        content: _finished
+            ? null
+            : const Text(
+            'Your quiz will start again from the first question when you sign in.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Stay')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Sign out')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+
+    if (ok == true) {
+      await FirebaseAuth.instance.signOut();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const WelcomeScreen()),
+            (route) => false,
+      );
+    } else if (!_finished) {
+      _startTimer(reset: false); // bacha hua time wahin se chale
     }
   }
 
@@ -71,6 +151,13 @@ class _QuizScreenState extends State<QuizScreen> {
         appBar: AppBar(
           automaticallyImplyLeading: false,
           title: Text(_finished ? 'Quiz result' : 'Skills quiz'),
+          actions: [
+            IconButton(
+              tooltip: 'Sign out',
+              icon: const Icon(Icons.logout),
+              onPressed: _confirmSignOut,
+            ),
+          ],
         ),
         body: _finished ? _buildResult() : _buildQuestion(),
       ),
@@ -86,7 +173,8 @@ class _QuizScreenState extends State<QuizScreen> {
         Row(
           children: [
             Expanded(
-              child: Text('Question ${_index + 1} of ${sampleQuiz.length} · ${q.skill}',
+              child: Text(
+                  'Question ${_index + 1} of ${sampleQuiz.length} · ${q.skill}',
                   style: const TextStyle(color: kMuted)),
             ),
             Text('${_secondsLeft}s',
@@ -122,7 +210,8 @@ class _QuizScreenState extends State<QuizScreen> {
                 border: Border.all(color: _selected == i ? kPrimary : kLine),
               ),
               child: Text(q.options[i],
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600)),
             ),
           ),
         const SizedBox(height: 4),
@@ -138,15 +227,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
   Widget _buildResult() {
     final score = _results.where((r) => r).length;
-
-    // Count right answers for every skill.
-    final Map<String, List<int>> bySkill = {};
-    for (int i = 0; i < _results.length; i++) {
-      final skill = sampleQuiz[i].skill;
-      bySkill.putIfAbsent(skill, () => [0, 0]);
-      bySkill[skill]![1]++;
-      if (_results[i]) bySkill[skill]![0]++;
-    }
+    final bySkill = _bySkill();
 
     return ListView(
       padding: const EdgeInsets.all(18),
@@ -166,7 +247,8 @@ class _QuizScreenState extends State<QuizScreen> {
                     children: [
                       Expanded(
                           child: Text(entry.key,
-                              style: const TextStyle(fontWeight: FontWeight.w700))),
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.w700))),
                       Text('${entry.value[0]}/${entry.value[1]}',
                           style: const TextStyle(color: kMuted)),
                     ],
@@ -175,13 +257,29 @@ class _QuizScreenState extends State<QuizScreen> {
             ],
           ),
         ),
-        BigButton(
-          text: 'See my career matches',
-          onPressed: () => Navigator.of(context).pushAndRemoveUntil(
-            MaterialPageRoute(builder: (_) => const MainShell()),
-            (route) => false,
+        if (_isSaving)
+          const Center(
+            child: Padding(
+              padding: EdgeInsets.all(12),
+              child: CircularProgressIndicator(),
+            ),
+          )
+        else if (_errorText != null) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(_errorText!,
+                style: const TextStyle(color: Colors.red),
+                textAlign: TextAlign.center),
           ),
-        ),
+          BigButton(text: 'Try again', onPressed: _saveResult),
+        ] else if (_saved)
+          BigButton(
+            text: 'See my career matches',
+            onPressed: () => Navigator.of(context).pushAndRemoveUntil(
+              MaterialPageRoute(builder: (_) => const MainShell()),
+                  (route) => false,
+            ),
+          ),
       ],
     );
   }

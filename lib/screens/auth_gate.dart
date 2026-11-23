@@ -4,6 +4,7 @@ import '../services/profile_service.dart';
 import 'welcome_screen.dart';
 import 'main_shell.dart';
 import 'profile_screen.dart';
+import 'quiz_screen.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -35,6 +36,9 @@ class AuthGate extends StatelessWidget {
             final data = profileSnap.data;
             if (data == null || data['profileComplete'] != true) {
               return const ProfileScreen();
+            }
+            if (data['quizComplete'] != true) {
+              return const QuizScreen();
             }
             return const MainShell();
           },

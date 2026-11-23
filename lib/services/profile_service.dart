@@ -41,4 +41,34 @@ class ProfileService {
       return null;
     }
   }
+
+  // Quiz ka result save karta hai. Success par null, warna error message.
+  Future<String?> saveQuizResult({
+    required int score,
+    required int total,
+    required Map<String, Map<String, int>> bySkill,
+  }) async {
+    final doc = _doc;
+    if (doc == null) return 'You are not signed in.';
+    try {
+      await doc.set(
+        {
+          'quizComplete': true,
+          'quizScore': score,
+          'quizTotal': total,
+          'quizBySkill': bySkill,
+          'quizCompletedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      return null;
+    } on FirebaseException catch (e) {
+      if (e.code == 'permission-denied') {
+        return 'Permission denied. Check Firestore rules.';
+      }
+      return 'Could not save quiz result. Check your internet.';
+    } catch (_) {
+      return 'Something went wrong. Please try again.';
+    }
+  }
 }
