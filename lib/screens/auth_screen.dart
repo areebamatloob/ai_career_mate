@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
 import '../services/auth_service.dart';
-import 'main_shell.dart';
-import 'profile_screen.dart';
+import 'auth_gate.dart';
 
 /// One screen for both "Create account" and "Sign in".
 class AuthScreen extends StatefulWidget {
@@ -60,9 +59,8 @@ class _AuthScreenState extends State<AuthScreen> {
       return;
     }
 
-    final Widget next = _isSignUp ? const ProfileScreen() : const MainShell();
     Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => next),
+      MaterialPageRoute(builder: (_) => const AuthGate()),
           (route) => false,
     );
   }
