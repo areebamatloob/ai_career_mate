@@ -232,7 +232,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       : 'Save and start skills quiz',
                   onPressed: _save,
                 ),
-              if (widget.isEdit)
                 Center(
                   child: TextButton(
                     onPressed: _signOut,
