@@ -7,28 +7,81 @@ class AiService {
   // Akhri error ka message (screen par dikhane ke liye).
   String? lastError;
 
-  // Model ka naam waqt ke saath badalta rehta hai. Agar "model not found"
-  // aaye to Firebase AI Logic ke docs ma current model naam dekh lein.
-  final _model = FirebaseAI.googleAI().generativeModel(
-    model: 'gemini-3.8-flash',
-    generationConfig: GenerationConfig(responseMimeType: 'application/json'),
-  );
-  // Server busy (500/503) ho to 3 dafa tak dobara koshish karta hai.
+  // Models ki list. Pehla fail ho (limit ya naam) to agla try hota hai.
+  // Naam badalte rehte hain, agar koi "not found" aaye to docs se current
+  // naam dekh lein. Fail hone wala model khud skip ho jata hai.
+  static const _modelNames = [
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+  ];
+
+  GenerativeModel _build(String name) {
+    return FirebaseAI.googleAI().generativeModel(
+      model: name,
+      generationConfig: GenerationConfig(responseMimeType: 'application/json'),
+    );
+  }
+
+  // Har model par busy hone par ek dafa dobara koshish, phir agla model.
   Future<GenerateContentResponse> _generateWithRetry(String prompt) async {
-    const maxTries = 3;
-    for (int attempt = 1; ; attempt++) {
-      try {
-        return await _model.generateContent([Content.text(prompt)]);
-      } catch (e) {
-        final msg = e.toString();
-        final busy = msg.contains('500') ||
-            msg.contains('503') ||
-            msg.contains('high demand');
-        if (!busy || attempt >= maxTries) rethrow;
-        await Future.delayed(Duration(seconds: 3 * attempt));
+    Object? lastErr;
+    for (final name in _modelNames) {
+      final model = _build(name);
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        try {
+          return await model.generateContent([Content.text(prompt)]);
+        } catch (e) {
+          lastErr = e;
+          debugPrint('AI error ($name): $e');
+          final msg = e.toString();
+          final busy = msg.contains('500') ||
+              msg.contains('503') ||
+              msg.contains('high demand');
+          if (busy && attempt < 2) {
+            await Future.delayed(const Duration(seconds: 3));
+            continue;
+          }
+          break; // agla model try karo
+        }
       }
     }
+    throw lastErr ?? Exception('AI request failed.');
   }
+
+  String _friendly(Object e) {
+    final msg = e.toString();
+    if (msg.contains('quota') ||
+        msg.contains('429') ||
+        msg.contains('RESOURCE_EXHAUSTED')) {
+      return 'AI limit reached for now. Please try again in a few minutes. '
+          '(If it keeps happening, the daily free limit is used up. '
+          'It resets around 1 PM Pakistan time.)';
+    }
+    return msg;
+  }
+
+  // AI ka jawab JSON list ma badalta hai.
+  List<Map<String, dynamic>>? _toList(String? text) {
+    if (text == null) {
+      lastError = 'AI returned an empty reply.';
+      return null;
+    }
+    final decoded = jsonDecode(text);
+    List list;
+    if (decoded is List) {
+      list = decoded;
+    } else if (decoded is Map &&
+        decoded.values.isNotEmpty &&
+        decoded.values.first is List) {
+      list = decoded.values.first as List;
+    } else {
+      lastError = 'AI reply had an unexpected format.';
+      return null;
+    }
+    return list.cast<Map<String, dynamic>>();
+  }
+
   // 3 career recommendations laata hai. Fail hone par null.
   Future<List<Map<String, dynamic>>?> getCareers() async {
     lastError = null;
@@ -64,34 +117,65 @@ Reply with ONLY a JSON array of 3 objects, each with:
 
     try {
       final response = await _generateWithRetry(prompt);
-      final text = response.text;
-      if (text == null) {
-        lastError = 'AI returned an empty reply.';
-        return null;
-      }
-
-      final decoded = jsonDecode(text);
-      List list;
-      if (decoded is List) {
-        list = decoded;
-      } else if (decoded is Map &&
-          decoded.values.isNotEmpty &&
-          decoded.values.first is List) {
-        list = decoded.values.first as List;
-      } else {
-        lastError = 'AI reply had an unexpected format.';
-        return null;
-      }
-      return list.cast<Map<String, dynamic>>();
+      return _toList(response.text);
     } catch (e) {
-      final msg = e.toString();
-      if (msg.contains('quota') || msg.contains('429')) {
-        lastError =
-        'Too many requests right now. Please wait a minute and try again.';
-      } else {
-        lastError = msg;
+      lastError = _friendly(e);
+      return null;
+    }
+  }
+
+  // Goal career ke liye 4-6 step ka roadmap banata hai. Fail hone par null.
+  Future<List<Map<String, dynamic>>?> getRoadmap() async {
+    lastError = null;
+
+    final p = await ProfileService().loadProfile();
+    if (p == null) {
+      lastError = 'Profile not found. Save your profile first.';
+      return null;
+    }
+
+    // Goal career dhoondo (user ne chuna ho ya pehli career).
+    final careers = (p['careers'] is List) ? p['careers'] as List : [];
+    Map? goal;
+    if (p['goalCareer'] != null) {
+      for (final c in careers) {
+        if (c is Map && c['title'] == p['goalCareer']) goal = c;
       }
-      debugPrint('AI error: $e');
+    }
+    goal ??= careers.isNotEmpty && careers.first is Map
+        ? careers.first as Map
+        : null;
+
+    if (goal == null) {
+      lastError = 'Open the Careers tab first to get your career matches.';
+      return null;
+    }
+
+    final prompt = '''
+You are a career coach. Make a practical learning roadmap of 4 to 6 steps
+for this person to become a "${goal['title']}".
+Focus on the skills they are missing. Do not repeat skills they already have.
+
+Profile:
+- Education: ${p['education']}, field: ${p['field']}
+- Current skills: ${p['skills']}
+- Projects: ${p['projects']}
+
+Skill gap for this career (current vs required, 0-100):
+${jsonEncode(goal['skills'])}
+
+Reply with ONLY a JSON array of objects, in the order to do them, each with:
+"title" (short action),
+"why" (one short sentence, why this step matters for them),
+"weeks" (integer, realistic number of weeks),
+"resource" (name of a well-known free course or website, NOT a link).
+''';
+
+    try {
+      final response = await _generateWithRetry(prompt);
+      return _toList(response.text);
+    } catch (e) {
+      lastError = _friendly(e);
       return null;
     }
   }
