@@ -1,4 +1,4 @@
-# ai_career_mate
+# Ai_career_mate
 
 A new Flutter project.
 
