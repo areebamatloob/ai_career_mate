@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../sample_data.dart';
 import '../services/profile_service.dart';
+import '../services/quiz_service.dart';
 import '../theme.dart';
 import 'main_shell.dart';
 import 'welcome_screen.dart';
@@ -16,7 +17,15 @@ class QuizScreen extends StatefulWidget {
 }
 
 class _QuizScreenState extends State<QuizScreen> {
-  static const int secondsPerQuestion = 25;
+  static const int secondsPerQuestion = 40;
+
+  final _profileService = ProfileService();
+  final _quizService = QuizService();
+
+  List<QuizQuestion> _questions = [];
+  bool _loading = true;
+  String? _loadError;
+  String? _loadDetails;
 
   int _index = 0;
   int? _selected;
@@ -25,7 +34,6 @@ class _QuizScreenState extends State<QuizScreen> {
   bool _finished = false;
   final List<bool> _results = [];
 
-  final _profileService = ProfileService();
   bool _isSaving = false;
   bool _saved = false;
   String? _errorText;
@@ -33,13 +41,71 @@ class _QuizScreenState extends State<QuizScreen> {
   @override
   void initState() {
     super.initState();
-    _startTimer();
+    _start();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
     super.dispose();
+  }
+
+  // Sawal tayyar karta hai: naye AI sawal, warna pehle save kiye hue.
+  Future<void> _start() async {
+    _timer?.cancel();
+    setState(() {
+      _loading = true;
+      _loadError = null;
+      _loadDetails = null;
+    });
+
+    final p = await _profileService.loadProfile();
+    if (p == null) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _loadError = 'Could not load your profile.';
+        _loadDetails = 'Check your internet and try again.';
+      });
+      return;
+    }
+
+    var qs = await _quizService.generate(p);
+    if (qs != null) {
+      // Naye sawal save (agli dafa AI na chale to kaam aayenge).
+      await _profileService.saveProfile({
+        'quizQuestions': QuizService.toMaps(qs),
+        'quizFor': QuizService.basisOf(p),
+      });
+    } else if (p['quizFor'] == QuizService.basisOf(p)) {
+      final saved = QuizService.fromMaps(p['quizQuestions']);
+      if (saved.length >= 3) {
+        saved.shuffle();
+        qs = saved;
+      }
+    }
+    if (!mounted) return;
+
+    if (qs == null) {
+      setState(() {
+        _loading = false;
+        _loadError = 'Could not prepare your quiz.';
+        _loadDetails = _quizService.lastError ?? 'No reply from AI.';
+      });
+      return;
+    }
+
+    setState(() {
+      _questions = qs!;
+      _index = 0;
+      _selected = null;
+      _results.clear();
+      _finished = false;
+      _saved = false;
+      _errorText = null;
+      _loading = false;
+    });
+    _startTimer();
   }
 
   void _startTimer({bool reset = true}) {
@@ -55,10 +121,11 @@ class _QuizScreenState extends State<QuizScreen> {
   }
 
   void _next() {
-    final question = sampleQuiz[_index];
+    if (_questions.isEmpty || _finished) return;
+    final question = _questions[_index];
     _results.add(_selected == question.answer);
 
-    if (_index == sampleQuiz.length - 1) {
+    if (_index == _questions.length - 1) {
       _timer?.cancel();
       setState(() => _finished = true);
       _saveResult();
@@ -75,7 +142,7 @@ class _QuizScreenState extends State<QuizScreen> {
   Map<String, List<int>> _bySkill() {
     final Map<String, List<int>> bySkill = {};
     for (int i = 0; i < _results.length; i++) {
-      final skill = sampleQuiz[i].skill;
+      final skill = _questions[i].skill;
       bySkill.putIfAbsent(skill, () => [0, 0]);
       bySkill[skill]![1]++;
       if (_results[i]) bySkill[skill]![0]++;
@@ -91,7 +158,7 @@ class _QuizScreenState extends State<QuizScreen> {
 
     final Map<String, Map<String, int>> data = {};
     _bySkill().forEach((skill, v) {
-      data[skill] = {'correct': v[0], 'total': v[1]};
+      data[QuizService.cleanKey(skill)] = {'correct': v[0], 'total': v[1]};
     });
 
     final error = await _profileService.saveQuizResult(
@@ -114,10 +181,10 @@ class _QuizScreenState extends State<QuizScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Sign out?'),
-        content: _finished
+        content: (_finished || _loading || _loadError != null)
             ? null
             : const Text(
-            'Your quiz will start again from the first question when you sign in.'),
+            'Your quiz will start again with new questions when you sign in.'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -137,7 +204,10 @@ class _QuizScreenState extends State<QuizScreen> {
         MaterialPageRoute(builder: (_) => const WelcomeScreen()),
             (route) => false,
       );
-    } else if (!_finished) {
+    } else if (!_finished &&
+        !_loading &&
+        _loadError == null &&
+        _questions.isNotEmpty) {
       _startTimer(reset: false); // bacha hua time wahin se chale
     }
   }
@@ -159,14 +229,60 @@ class _QuizScreenState extends State<QuizScreen> {
             ),
           ],
         ),
-        body: _finished ? _buildResult() : _buildQuestion(),
+        body: _loading
+            ? _buildLoading()
+            : _loadError != null
+            ? _buildLoadError()
+            : _finished
+            ? _buildResult()
+            : _buildQuestion(),
       ),
     );
   }
 
+  Widget _buildLoading() {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 14),
+          Text('Preparing your quiz from your skills...',
+              style: TextStyle(color: kMuted)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadError() {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        AppCard(
+          child: Column(
+            children: [
+              Text(_loadError!,
+                  style: const TextStyle(color: Colors.red),
+                  textAlign: TextAlign.center),
+              if (_loadDetails != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(_loadDetails!,
+                      style: const TextStyle(color: kMuted, fontSize: 12),
+                      textAlign: TextAlign.center),
+                ),
+              const SizedBox(height: 12),
+              BigButton(text: 'Try again', onPressed: _start),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildQuestion() {
-    final q = sampleQuiz[_index];
-    final isLast = _index == sampleQuiz.length - 1;
+    final q = _questions[_index];
+    final isLast = _index == _questions.length - 1;
     return ListView(
       padding: const EdgeInsets.all(18),
       children: [
@@ -174,7 +290,7 @@ class _QuizScreenState extends State<QuizScreen> {
           children: [
             Expanded(
               child: Text(
-                  'Question ${_index + 1} of ${sampleQuiz.length} · ${q.skill}',
+                  'Question ${_index + 1} of ${_questions.length} · ${q.skill}',
                   style: const TextStyle(color: kMuted)),
             ),
             Text('${_secondsLeft}s',
@@ -186,7 +302,7 @@ class _QuizScreenState extends State<QuizScreen> {
         ClipRRect(
           borderRadius: BorderRadius.circular(9),
           child: LinearProgressIndicator(
-            value: _index / sampleQuiz.length,
+            value: _index / _questions.length,
             minHeight: 9,
             backgroundColor: kLine,
             color: kPrimary,

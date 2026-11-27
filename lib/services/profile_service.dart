@@ -51,6 +51,11 @@ class ProfileService {
     final doc = _doc;
     if (doc == null) return 'You are not signed in.';
     try {
+      // Purana skill-wise result pehle saaf (merge se mix na ho).
+      await doc.set(
+        {'quizBySkill': FieldValue.delete()},
+        SetOptions(merge: true),
+      );
       await doc.set(
         {
           'quizComplete': true,
