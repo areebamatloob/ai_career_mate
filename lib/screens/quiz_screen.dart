@@ -73,13 +73,14 @@ class _QuizScreenState extends State<QuizScreen> {
     var qs = await _quizService.generate(p);
     if (qs != null) {
       // Naye sawal save (agli dafa AI na chale to kaam aayenge).
-      await _profileService.saveProfile({
+      // unawaited: save ka intezar nahi, quiz foran shuru hota hai.
+      unawaited(_profileService.saveProfile({
         'quizQuestions': QuizService.toMaps(qs),
         'quizFor': QuizService.basisOf(p),
-      });
+      }));
     } else if (p['quizFor'] == QuizService.basisOf(p)) {
       final saved = QuizService.fromMaps(p['quizQuestions']);
-      if (saved.length >= 3) {
+      if (saved.length >= 2) {
         saved.shuffle();
         qs = saved;
       }

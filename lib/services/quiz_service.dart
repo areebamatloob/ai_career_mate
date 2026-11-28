@@ -15,6 +15,10 @@ class QuizService {
     'gemini-3.1-flash-lite',
   ];
 
+  // Har AI call ki hadd aur poore quiz ke liye kul hadd.
+  static const _callTimeout = Duration(seconds: 35);
+  static const _totalTimeout = Duration(seconds: 75);
+
   // Profile ki skills ki list (zyada se zyada 5).
   static List<String> skillsOf(Map<String, dynamic>? p) {
     final raw = (p?['skills'] ?? '').toString();
@@ -28,7 +32,7 @@ class QuizService {
     return out.length > 5 ? out.sublist(0, 5) : out;
   }
 
-  // Saved sawal tab hi use hote hain jab skills aur field wohi hon.
+  // Saved sawal tab hi use hote hain jab skills, field aur level wohi hon.
   static String basisOf(Map<String, dynamic>? p) => [
     skillsOf(p).join(','),
     (p?['field'] ?? '').toString().trim(),
@@ -75,6 +79,33 @@ class QuizService {
     return out;
   }
 
+  // Education level ke hisab se sawalon ki mushkil.
+  static String difficultyGuide(Map<String, dynamic> p) {
+    final edu = (p['education'] ?? '').toString();
+    switch (edu) {
+      case 'High school':
+        return 'VERY EASY. The candidate is a high school student. Test only '
+            'basic ideas and simple everyday use of the skill, at school '
+            'level. No advanced terms, no tricky cases, no long code.';
+      case 'Diploma':
+        return 'EASY. The candidate has a diploma or is a beginner. Test '
+            'fundamentals and simple practical use. Avoid tricky cases.';
+      case 'Bachelor (in progress)':
+        return 'EASY TO MEDIUM. The candidate is still studying for a '
+            'bachelor degree. Test course-level knowledge with simple '
+            'practical situations. Do not use tricky edge cases.';
+      case 'Bachelor (completed)':
+        return 'MEDIUM TO HARD. The candidate has finished a bachelor '
+            'degree. Test practical, scenario-based understanding and '
+            'reading short snippets, so they can honestly check their skill.';
+      case 'Master':
+        return 'HARD. The candidate holds a master degree. Test deeper '
+            'practical understanding, trade-offs and scenarios.';
+      default:
+        return 'MEDIUM. Test practical understanding of the skill.';
+    }
+  }
+
   String _friendly(Object? e) {
     final msg = (e ?? 'Unknown error').toString();
     if (msg.contains('quota') ||
@@ -84,11 +115,14 @@ class QuizService {
           '(If it keeps happening, the daily free limit is used up. '
           'It resets around 1 PM Pakistan time.)';
     }
+    if (msg.contains('TimeoutException')) {
+      return 'The AI is taking too long right now. Please try again.';
+    }
     return msg;
   }
 
   // AI ke jawab se sahi sawal nikalta hai, options shuffle karta hai.
-  List<QuizQuestion> _parse(String? text, List<String> skills) {
+  List<QuizQuestion> _parse(String? text, List<String> skills, int perSkill) {
     if (text == null) return [];
     final decoded = jsonDecode(text);
     List? raw;
@@ -103,6 +137,7 @@ class QuizService {
 
     final rnd = Random();
     final out = <QuizQuestion>[];
+    final counts = <String, int>{};
     for (final item in raw) {
       if (item is! Map) continue;
       final q = (item['question'] ?? '').toString().trim();
@@ -124,6 +159,11 @@ class QuizService {
           ? match.first
           : (skill.isEmpty ? skills.first : skill);
 
+      // Har skill ke zyada se zyada perSkill sawal.
+      final key = skill.toLowerCase();
+      counts[key] = (counts[key] ?? 0) + 1;
+      if (counts[key]! > perSkill) continue;
+
       // Options ka tarteeb badlo, sahi jawab ka naya number nikalo.
       final order = [0, 1, 2, 3]..shuffle(rnd);
       final shuffled = [for (final i in order) options[i]];
@@ -133,7 +173,8 @@ class QuizService {
     return out;
   }
 
-  // Profile ki skills ke hisab se naye sawal banata hai. Fail hone par null.
+  // Profile ki skills aur education ke hisab se naye sawal banata hai.
+  // Fail hone par null.
   Future<List<QuizQuestion>?> generate(Map<String, dynamic> p) async {
     lastError = null;
 
@@ -142,30 +183,35 @@ class QuizService {
       lastError = 'Add your skills in your profile first.';
       return null;
     }
-    final perSkill = skills.length <= 3 ? 3 : 2;
+    const perSkill = 2;
     final total = skills.length * perSkill;
+    final needed = total > 2 ? total - 1 : total;
 
     final prompt = '''
 You are writing a skills test for a candidate. Write exactly $total
-multiple-choice questions: $perSkill for each skill listed below.
+multiple-choice questions: exactly $perSkill for each skill listed below.
 
 Candidate:
-- Education: ${p['education']}, field of study: ${p['field']}
+- Education level: ${p['education']}
+- Field of study: ${p['field']}
 - Type: ${p['type']}
+
+Difficulty (very important, follow it strictly):
+${difficultyGuide(p)}
+Within each skill, the second question may be a little harder than the first,
+but both must stay inside the difficulty above.
 
 Skills to test (use these exact names in the "skill" field):
 ${skills.map((s) => '- $s').join('\n')}
 
 Rules:
-- Difficulty: for each skill, the first question is intermediate and the
-  rest are advanced (practical, scenario based, or reading a short snippet).
-  No beginner definitions. For non-technical skills such as communication,
-  use realistic workplace scenarios.
 - Exactly 4 options per question and exactly ONE clearly correct option.
   No "all of the above" or "none of the above". Wrong options must be
   plausible, not silly.
 - Keep each question under 40 words and each option under 15 words. Any
   code must be a few lines, written as plain text.
+- For non-technical skills such as communication, use a short realistic
+  situation.
 - Before you answer, double-check that the correct option really is correct.
 - "answer" is the 0-based index (0 to 3) of the correct option.
 - Variation seed: ${DateTime.now().millisecondsSinceEpoch}
@@ -175,8 +221,10 @@ Reply with ONLY a JSON array of objects, each with:
 "answer" (integer 0-3).
 ''';
 
+    final watch = Stopwatch()..start();
     Object? lastErr;
     for (final name in _modelNames) {
+      if (watch.elapsed > _totalTimeout) break;
       final model = FirebaseAI.googleAI().generativeModel(
         model: name,
         generationConfig: GenerationConfig(
@@ -185,10 +233,12 @@ Reply with ONLY a JSON array of objects, each with:
         ),
       );
       for (int attempt = 1; attempt <= 2; attempt++) {
+        if (watch.elapsed > _totalTimeout) break;
         try {
-          final response = await model.generateContent([Content.text(prompt)]);
-          final list = _parse(response.text, skills);
-          if (list.length >= 3) return list;
+          final response = await model
+              .generateContent([Content.text(prompt)]).timeout(_callTimeout);
+          final list = _parse(response.text, skills, perSkill);
+          if (list.length >= needed && list.length >= 2) return list;
           lastErr = 'AI returned too few valid questions.';
           break; // agla model try karo
         } catch (e) {
